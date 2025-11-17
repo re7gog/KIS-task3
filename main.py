@@ -1,18 +1,33 @@
 import argparse
+from xml.dom import minidom
+import xml.etree.ElementTree as ET
 
 def args_parser():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--src", type=str, help="Source code file")
-    parser.add_argument("--out", type=str, help="Binary output file")
-    parser.add_argument("--test-mode", action="store_true", help="Run in test mode")
+    parser.add_argument("--src", type=str, help="Source code file (for assemble mode)")
+    parser.add_argument("--out", type=str, help="Binary output file (assemble mode)")
+    parser.add_argument("--test-mode", action="store_true", help="Run in test mode (assemble mode)")
+    parser.add_argument("--interpret", action="store_true", help="Run interpreter on binary file (interpret mode)")
+    parser.add_argument("--bin", type=str, help="Binary file to interpret (interpret mode)")
+    parser.add_argument("--dump", type=str, help="Output XML dump file (interpret mode)")
+    parser.add_argument("--dump-start", type=int, default=0, help="Dump start address (interpret mode)")
+    parser.add_argument("--dump-end", type=int, default=255, help="Dump end address (interpret mode)")
     args = parser.parse_args()
 
-    if not args.src:
-        print("Файл исходного кода не указан")
-        exit(1)
-    elif not args.out:
-        print("Файл вывода не указан")
-        exit(1)
+    if args.interpret:
+        if not args.bin:
+            print("Бинарный файл не указан (используйте --bin)")
+            exit(1)
+        if not args.dump:
+            print("Файл дампа не указан (используйте --dump)")
+            exit(1)
+    else:
+        if not args.src:
+            print("Файл исходного кода не указан (используйте --src)")
+            exit(1)
+        if not args.out:
+            print("Файл вывода не указан (используйте --out)")
+            exit(1)
     
     return args
 
@@ -107,7 +122,7 @@ def encode_instruction(instr):
     opcode = instr['opcode'] & 0x1F  # 0-4 bits
 
     if m == 'ld':
-        # A bits 0-4, B bits 5-23 (19), C bits 24-55 (32) -> 56 bits -> 7 bytes
+        # A 0-4, B 5-23 (19), C 24-55 (32) -> 56 -> 7 байт
         B = f.get('B', 0)
         C = f.get('C', 0)
         if B >= (1 << 19) or B < 0:
@@ -118,7 +133,7 @@ def encode_instruction(instr):
         size = 7
 
     elif m == 'rd':
-        # A 0-4, B 5-23 (19), C 24-42 (19) -> up to bit 42 -> 6 bytes
+        # A 0-4, B 5-23 (19), C 24-42 (19) -> 42 -> 6 байт
         B = f.get('B', 0)
         C = f.get('C', 0)
         if B >= (1 << 19) or B < 0:
@@ -129,7 +144,7 @@ def encode_instruction(instr):
         size = 6
 
     elif m == 'wr':
-        # A 0-4, B 5-14 (10), C 15-33 (19), D 34-52 (19) -> 53 bits -> 7 bytes
+        # A 0-4, B 5-14 (10), C 15-33 (19), D 34-52 (19) -> 53 -> 7 байт
         B = f.get('B', 0)
         C = f.get('C', 0)
         D = f.get('D', 0)
@@ -143,7 +158,7 @@ def encode_instruction(instr):
         size = 7
 
     elif m == 'bir':
-        # A 0-4, B 5-23 (19), D 24-42 (19), C 43-61 (19) -> 62 bits -> 8 bytes
+        # A 0-4, B 5-23 (19), D 24-42 (19), C 43-61 (19) -> 62 -> 8 байт
         B = f.get('B', 0)
         D = f.get('D', 0)
         C = f.get('C', 0)
@@ -169,25 +184,131 @@ def assemble_to_bytes(program):
         out.extend(b)
     return bytes(out)
 
+
+def decode_instruction_from_bytes(data: bytes, offset: int):
+    if offset >= len(data):
+        return None, 0
+    opcode = data[offset] & 0x1F  # 0-4 
+    rev_map = {v: k for k, v in MNEMONICS.items()}
+    if opcode not in rev_map:
+        raise ValueError(f'Неизвестный код операции {opcode} на смещении {offset}')
+    mnemonic = rev_map[opcode]
+    size_map = {'ld':7, 'rd':6, 'wr':7, 'bir':8}
+    size = size_map[mnemonic]
+    if offset + size > len(data):
+        raise ValueError('Неожиданный конец кода при декодировании инструкции')
+    chunk = int.from_bytes(data[offset:offset+size], byteorder='little', signed=False)
+
+    # извлечение полей по позициям битов, соответствующих кодированию
+    if mnemonic == 'ld':
+        B = (chunk >> 5) & ((1 << 19) - 1)
+        C = (chunk >> 24) & ((1 << 32) - 1)
+        fields = {'B': B, 'C': C}
+    elif mnemonic == 'rd':
+        B = (chunk >> 5) & ((1 << 19) - 1)
+        C = (chunk >> 24) & ((1 << 19) - 1)
+        fields = {'B': B, 'C': C}
+    elif mnemonic == 'wr':
+        B = (chunk >> 5) & ((1 << 10) - 1)
+        C = (chunk >> 15) & ((1 << 19) - 1)
+        D = (chunk >> 34) & ((1 << 19) - 1)
+        fields = {'B': B, 'C': C, 'D': D}
+    elif mnemonic == 'bir':
+        B = (chunk >> 5) & ((1 << 19) - 1)
+        D = (chunk >> 24) & ((1 << 19) - 1)
+        C = (chunk >> 43) & ((1 << 19) - 1)
+        fields = {'B': B, 'C': C, 'D': D}
+    else:
+        fields = {}
+
+    instr = {'mnemonic': mnemonic, 'opcode': opcode, 'fields': fields, 'size': size}
+    return instr, size
+
+
+def rotate_right(value: int, shift: int, width: int = 64) -> int:
+    shift %= width
+    mask = (1 << width) - 1
+    return ((value >> shift) | ((value << (width - shift)) & mask)) & mask
+
+
+def run_interpreter(code_bytes: bytes, dump_start: int, dump_end: int):
+    code_mem = code_bytes
+    data_mem = {}  # адрес -> целое число
+
+    ip = 0
+    while ip < len(code_mem):
+        instr, size = decode_instruction_from_bytes(code_mem, ip)
+        if instr is None:
+            break
+        m = instr['mnemonic']
+        f = instr['fields']
+
+        if m == 'ld':
+            B = f['B']; C = f['C']
+            data_mem[B] = C
+        elif m == 'rd':
+            B = f['B']; C = f['C']
+            data_mem[C] = data_mem.get(B, 0)
+        elif m == 'wr':
+            B = f['B']; C = f['C']; D = f['D']
+            addr = data_mem.get(D, 0) + B
+            data_mem[addr] = data_mem.get(C, 0)
+        elif m == 'bir':
+            B = f['B']; C = f['C']; D = f['D']
+            a = data_mem.get(C, 0)
+            b = data_mem.get(B, 0)
+            data_mem[D] = rotate_right(a, b, 64)
+
+        ip += size
+
+    # сборка дампа в XML
+    root = ET.Element('memory')
+    for addr in range(dump_start, dump_end + 1):
+        cell = ET.SubElement(root, 'cell')
+        cell.set('address', str(addr))
+        cell.text = str(data_mem.get(addr, 0))
+
+    return ET.ElementTree(root)
+
+
+def write_pretty_xml(tree: 'ET.ElementTree', path: str):
+    # produce indented, human-readable XML using minidom
+    root = tree.getroot()
+    rough = ET.tostring(root, 'utf-8')
+    reparsed = minidom.parseString(rough)
+    pretty = reparsed.toprettyxml(indent="  ")
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(pretty)
+
 if __name__ == "__main__":
     args = args_parser()
 
-    with open(args.src, 'r', encoding='utf-8') as f:
-        src = f.read()
+    if args.interpret:
+        # Режим интерпретации: чтение бинарного файла, запуск интерпретатора, запись дампа в XML
+        with open(args.bin, 'rb') as f:
+            code = f.read()
 
-    program = parse_assembly(src)
+        tree = run_interpreter(code, args.dump_start, args.dump_end)
+        write_pretty_xml(tree, args.dump)
+        print(f"Дамп записан в: {args.dump}")
+    else:
+        # Режим сборки
+        with open(args.src, 'r', encoding='utf-8') as f:
+            src = f.read()
 
-    # Собираем в двоичный формат и записываем в выходной файл
-    binary = assemble_to_bytes(program)
-    with open(args.out, 'wb') as f:
-        f.write(binary)
+        program = parse_assembly(src)
 
-    print(f"Размер бинарного файла: {len(binary)} байт")
+        # Собираем в двоичный формат и записываем в выходной файл
+        binary = assemble_to_bytes(program)
+        with open(args.out, 'wb') as f:
+            f.write(binary)
 
-    if args.test_mode:
-        # Печать внутреннего представления и байтового формата для тестирования
-        print_internal_representation(program)
-        # Печать байтов в шестнадцатеричном виде, пробел-разделённо
-        hex_bytes = ' '.join(f"{b:02X}" for b in binary)
-        print("Байтовый формат:")
-        print(hex_bytes)
+        print(f"Размер бинарного файла: {len(binary)} байт")
+
+        if args.test_mode:
+            # Печать внутреннего представления и байтового формата для тестирования
+            print_internal_representation(program)
+            # Печать байтов в шестнадцатеричном виде, пробел-разделённо
+            hex_bytes = ' '.join(f"{b:02X}" for b in binary)
+            print("Байтовый формат:")
+            print(hex_bytes)
