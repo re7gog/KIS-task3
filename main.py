@@ -61,7 +61,10 @@ def parse_assembly(text: str):
         line = raw.strip()
         if not line:
             continue
-        # убираем ; для комментариев и другого в конце
+        # пропуск строк-комментариев
+        if line.startswith('#') or line.startswith('//') or line.startswith(';'):
+            continue
+        # убираем ; для комментариев в конце строки
         if ';' in line:
             line = line[:line.rfind(';')].strip()
         if not line:
