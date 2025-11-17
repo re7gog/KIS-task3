@@ -1,5 +1,4 @@
 import argparse
-import json
 
 def args_parser():
     parser = argparse.ArgumentParser()
@@ -101,6 +100,75 @@ def print_internal_representation(program):
                 print(f"  {k}: {instr['fields'][k]}")
         print()
 
+
+def encode_instruction(instr):
+    m = instr['mnemonic']
+    f = instr['fields']
+    opcode = instr['opcode'] & 0x1F  # 0-4 bits
+
+    if m == 'ld':
+        # A bits 0-4, B bits 5-23 (19), C bits 24-55 (32) -> 56 bits -> 7 bytes
+        B = f.get('B', 0)
+        C = f.get('C', 0)
+        if B >= (1 << 19) or B < 0:
+            raise ValueError('Поле B вне диапазона для ld')
+        if C >= (1 << 32) or C < 0:
+            raise ValueError('Поле C вне диапазона для ld')
+        val = opcode | (B << 5) | (C << 24)
+        size = 7
+
+    elif m == 'rd':
+        # A 0-4, B 5-23 (19), C 24-42 (19) -> up to bit 42 -> 6 bytes
+        B = f.get('B', 0)
+        C = f.get('C', 0)
+        if B >= (1 << 19) or B < 0:
+            raise ValueError('Поле B вне диапазона для rd')
+        if C >= (1 << 19) or C < 0:
+            raise ValueError('Поле C вне диапазона для rd')
+        val = opcode | (B << 5) | (C << 24)
+        size = 6
+
+    elif m == 'wr':
+        # A 0-4, B 5-14 (10), C 15-33 (19), D 34-52 (19) -> 53 bits -> 7 bytes
+        B = f.get('B', 0)
+        C = f.get('C', 0)
+        D = f.get('D', 0)
+        if B >= (1 << 10) or B < 0:
+            raise ValueError('Поле B вне диапазона для wr')
+        if C >= (1 << 19) or C < 0:
+            raise ValueError('Поле C вне диапазона для wr')
+        if D >= (1 << 19) or D < 0:
+            raise ValueError('Поле D вне диапазона для wr')
+        val = opcode | (B << 5) | (C << 15) | (D << 34)
+        size = 7
+
+    elif m == 'bir':
+        # A 0-4, B 5-23 (19), D 24-42 (19), C 43-61 (19) -> 62 bits -> 8 bytes
+        B = f.get('B', 0)
+        D = f.get('D', 0)
+        C = f.get('C', 0)
+        if B >= (1 << 19) or B < 0:
+            raise ValueError('Поле B вне диапазона для bir')
+        if D >= (1 << 19) or D < 0:
+            raise ValueError('Поле D вне диапазона для bir')
+        if C >= (1 << 19) or C < 0:
+            raise ValueError('Поле C вне диапазона для bir')
+        val = opcode | (B << 5) | (D << 24) | (C << 43)
+        size = 8
+
+    else:
+        raise ValueError(f'Неизвестная мнемоника для кодирования: {m}')
+
+    return val.to_bytes(size, byteorder='little', signed=False)
+
+
+def assemble_to_bytes(program):
+    out = bytearray()
+    for instr in program:
+        b = encode_instruction(instr)
+        out.extend(b)
+    return bytes(out)
+
 if __name__ == "__main__":
     args = args_parser()
 
@@ -109,11 +177,17 @@ if __name__ == "__main__":
 
     program = parse_assembly(src)
 
+    # Собираем в двоичный формат и записываем в выходной файл
+    binary = assemble_to_bytes(program)
+    with open(args.out, 'wb') as f:
+        f.write(binary)
+
+    print(f"Размер бинарного файла: {len(binary)} байт")
+
     if args.test_mode:
+        # Печать внутреннего представления и байтового формата для тестирования
         print_internal_representation(program)
-    else:
-        if args.out:
-            with open(args.out, 'w', encoding='utf-8') as f:
-                json.dump(program, f, indent=2)
-        else:
-            print("Программа не в тестовом режиме. Используйте --test-mode для печати внутреннего представления.")
+        # Печать байтов в шестнадцатеричном виде, пробел-разделённо
+        hex_bytes = ' '.join(f"{b:02X}" for b in binary)
+        print("Байтовый формат:")
+        print(hex_bytes)
