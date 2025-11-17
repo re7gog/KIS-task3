@@ -1,4 +1,5 @@
 import argparse
+import json
 
 def args_parser():
     parser = argparse.ArgumentParser()
@@ -113,7 +114,6 @@ if __name__ == "__main__":
     else:
         if args.out:
             with open(args.out, 'w', encoding='utf-8') as f:
-                import json
                 json.dump(program, f, indent=2)
         else:
             print("Программа не в тестовом режиме. Используйте --test-mode для печати внутреннего представления.")
