@@ -1,5 +1,4 @@
-# Test for bir (rotate right)
-# store value 0x80000000 at address 20, shift amount 1 at address 21
+# хранить значение 0x80000000 по адресу 20, сдвинуть на 1 в адрес 21
 ld 20, 2147483648 ;
 ld 21, 1 ;
 bir 21, 20, 22 ;
